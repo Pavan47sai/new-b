@@ -2,6 +2,7 @@ import React from 'react';
 
 function Admin({
   session,
+  loading,
   draft,
   error,
   notice,
@@ -93,6 +94,7 @@ function Admin({
               placeholder="What would you like to ask everyone?"
               rows={4}
               maxLength={500}
+              disabled={loading}
             />
             <div className="field-footer">
               <span>Keep it clear and easy to answer</span>
@@ -103,7 +105,7 @@ function Admin({
               <button
                 className="button button-primary"
                 onClick={onStart}
-                disabled={session.active}
+                disabled={session.active || loading}
               >
                 <span aria-hidden="true">▶</span>
                 Start session
@@ -111,7 +113,7 @@ function Admin({
               <button
                 className="button button-secondary"
                 onClick={onEnd}
-                disabled={!session.active}
+                disabled={!session.active || loading}
               >
                 End session
               </button>
@@ -142,7 +144,7 @@ function Admin({
                 >
                   Session page
                 </a>{' '}
-                on this browser to respond.
+                on any device to respond.
               </p>
             </div>
           </div>

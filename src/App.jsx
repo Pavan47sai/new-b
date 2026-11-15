@@ -1,9 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Admin from './Admin.jsx';
 import Session from './Session.jsx';
-
-const SESSION_KEY = 'gather-live-session';
-const SESSION_EVENT = 'gather-session-change';
 
 const emptySession = {
   id: null,
@@ -13,51 +10,89 @@ const emptySession = {
   no: 0,
 };
 
-function readStoredValue(key, fallback) {
-  const stored = window.localStorage.getItem(key);
-  if (!stored) return fallback;
+async function requestSession(action, payload = {}) {
+  const response = await fetch('/api/session', {
+    method: action ? 'POST' : 'GET',
+    headers: action ? { 'Content-Type': 'application/json' } : undefined,
+    body: action ? JSON.stringify({ action, ...payload }) : undefined,
+    cache: 'no-store',
+  });
+  const result = await response.json();
 
-  try {
-    return JSON.parse(stored);
-  } catch {
-    return fallback;
+  if (!response.ok) {
+    throw new Error(result.error || 'Could not connect to the shared session.');
   }
+
+  return result.session;
 }
 
 function App() {
   const [page, setPage] = useState(() =>
     window.location.pathname === '/admin' ? 'admin' : 'session',
   );
-  const [session, setSession] = useState(() =>
-    readStoredValue(SESSION_KEY, emptySession),
-  );
+  const [session, setSession] = useState(emptySession);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [draft, setDraft] = useState(session.text);
+  const [draft, setDraft] = useState('');
+  const draftValue = useRef('');
+  const updateTimer = useRef(null);
+  const pendingTextUpdate = useRef(false);
+  const connectionError = useRef(false);
 
   useEffect(() => {
-    const refreshData = () => setSession(readStoredValue(SESSION_KEY, emptySession));
-    const onStorage = (event) => {
-      if (event.key === SESSION_KEY) {
-        refreshData();
+    let mounted = true;
+
+    async function refreshSession() {
+      try {
+        const latestSession = await requestSession();
+        if (mounted) {
+          if (connectionError.current) {
+            setError('');
+            connectionError.current = false;
+          }
+          setSession((currentSession) =>
+            pendingTextUpdate.current && currentSession.id === latestSession.id
+              ? { ...latestSession, text: currentSession.text }
+              : latestSession,
+          );
+        }
+      } catch (requestError) {
+        if (mounted) {
+          connectionError.current = true;
+          setError(requestError.message);
+        }
+      } finally {
+        if (mounted) setLoading(false);
       }
-    };
+    }
+
     const onPopState = () =>
       setPage(window.location.pathname === '/admin' ? 'admin' : 'session');
 
-    window.addEventListener('storage', onStorage);
-    window.addEventListener(SESSION_EVENT, refreshData);
+    refreshSession();
+    const intervalId = window.setInterval(refreshSession, 2000);
     window.addEventListener('popstate', onPopState);
+
     return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener(SESSION_EVENT, refreshData);
+      mounted = false;
+      window.clearInterval(intervalId);
       window.removeEventListener('popstate', onPopState);
     };
   }, []);
 
   useEffect(() => {
+    if (pendingTextUpdate.current && session.id) return;
+    draftValue.current = session.text;
     setDraft(session.text);
   }, [session.id, session.text]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(updateTimer.current);
+    },
+    [],
+  );
 
   function navigate(event, destination, nextPage) {
     event.preventDefault();
@@ -67,58 +102,78 @@ function App() {
     setNotice('');
   }
 
-  function saveSession(nextSession) {
+  async function runAction(action, payload) {
     try {
-      window.localStorage.setItem(SESSION_KEY, JSON.stringify(nextSession));
+      const nextSession = await requestSession(action, payload);
+      if (action === 'updateText') {
+        pendingTextUpdate.current = payload.text !== draftValue.current;
+      }
       setSession(nextSession);
-      window.dispatchEvent(new Event(SESSION_EVENT));
       setError('');
-      return true;
-    } catch {
-      setError(
-        'Could not save this session in your browser. Check storage settings and try again.',
-      );
-      return false;
+      return nextSession;
+    } catch (requestError) {
+      if (action === 'updateText') {
+        pendingTextUpdate.current = payload.text !== draftValue.current;
+      }
+      setError(requestError.message);
+      return null;
     }
   }
 
-  function startSession() {
+  async function startSession() {
     if (!draft.trim()) {
       setError('Add a session question or message before starting.');
       return;
     }
 
-    if (
-      saveSession({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        active: true,
-        text: draft.trim(),
-        yes: 0,
-        no: 0,
-      })
-    ) {
+    const nextSession = await runAction('start', { text: draft.trim() });
+    if (nextSession) {
       setNotice('Your session is live. Share the Session page with participants.');
     }
   }
 
-  function endSession() {
-    if (session.active && saveSession({ ...session, active: false })) {
+  async function endSession() {
+    window.clearTimeout(updateTimer.current);
+    pendingTextUpdate.current = false;
+    if (!session.active || !session.id) return;
+
+    let currentSession = session;
+    if (draft !== session.text) {
+      currentSession = await runAction('updateText', {
+        sessionId: session.id,
+        text: draft,
+      });
+      if (!currentSession) return;
+    }
+
+    if (await runAction('end', { sessionId: currentSession.id })) {
       setNotice('Session ended. Participants can no longer respond.');
     }
   }
 
   function updateSessionText(value) {
+    draftValue.current = value;
     setDraft(value);
     setError('');
-    if (session.active) {
-      saveSession({ ...session, text: value });
-    }
-  }
-
-  function submitResponse(answer) {
     if (!session.active || !session.id) return;
 
-    if (saveSession({ ...session, [answer]: session[answer] + 1 })) {
+    window.clearTimeout(updateTimer.current);
+    const sessionId = session.id;
+    pendingTextUpdate.current = true;
+    updateTimer.current = window.setTimeout(() => {
+      updateTimer.current = null;
+      runAction('updateText', { sessionId, text: value });
+    }, 300);
+  }
+
+  async function submitResponse(answer) {
+    if (!session.active || !session.id) return;
+
+    const nextSession = await runAction('respond', {
+      sessionId: session.id,
+      answer,
+    });
+    if (nextSession) {
       setNotice(`Your "${answer === 'yes' ? 'Yes' : 'No'}" response was recorded.`);
     }
   }
@@ -127,6 +182,7 @@ function App() {
     return (
       <Admin
         session={session}
+        loading={loading}
         draft={draft}
         error={error}
         notice={notice}
@@ -141,6 +197,7 @@ function App() {
   return (
     <Session
       session={session}
+      loading={loading}
       error={error}
       notice={notice}
       onRespond={submitResponse}

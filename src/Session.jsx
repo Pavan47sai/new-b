@@ -1,7 +1,7 @@
 import React from 'react';
 import indianIdolLogo from '../Indian_Idol.png';
 
-function Session({ session, error, notice, onRespond }) {
+function Session({ session, loading, error, notice, onRespond }) {
   return (
     <main className="session-page">
       <a className="session-logo" href="/session" aria-label="Indian Idol">
@@ -42,9 +42,20 @@ function Session({ session, error, notice, onRespond }) {
             )}
           </>
         ) : (
-          <p className="session-empty">
-            {session.active ? 'Waiting for the question…' : 'No active session'}
-          </p>
+          <>
+            <p className="session-empty">
+              {loading
+                ? 'Connecting to the session…'
+                : session.active
+                  ? 'Waiting for the question…'
+                  : 'No active session'}
+            </p>
+            {error && (
+              <p className="session-error" role="alert">
+                {error}
+              </p>
+            )}
+          </>
         )}
       </section>
     </main>
